@@ -21,6 +21,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"sync"
 	"wschat.cvclon3.net/internal/messages"
 	"wschat.cvclon3.net/internal/room"
 	"wschat.cvclon3.net/pkg/web_errors"
@@ -30,9 +31,9 @@ var addr = flag.String("addr", "localhost:8080", "http service address")
 
 var upgrader = websocket.Upgrader{} // use default options
 
-var clients = make(map[string]*websocket.Conn)
+var clients_ sync.Map
 
-func echo(w http.ResponseWriter, r *http.Request) {
+func WSechoHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/echo" {
 		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
@@ -44,12 +45,22 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn.WriteMessage(1, []byte("CONNECTION SUCCESFUL"))
+	err = conn.WriteMessage(1, []byte("CONNECTION SUCCESFUL"))
+	if err != nil {
+		log.Print("49 - ON CONN ERROR", err)
+		return
+	}
 
-	fmt.Println(clients)
+	fmt.Println(clients_)
 	fmt.Println("new conn: ", conn.NetConn())
 
-	defer conn.Close()
+	defer func(conn *websocket.Conn) {
+		err := conn.Close()
+		if err != nil {
+			log.Print("60 - close error:", err)
+			return
+		}
+	}(conn)
 
 	var initMsg messages.InitMessage
 
@@ -60,18 +71,25 @@ func echo(w http.ResponseWriter, r *http.Request) {
 	} else {
 
 		if initMsg.Username == "" || len(initMsg.Username) > 10 {
-			conn.WriteMessage(1, []byte("NULL OR TOO LONG USERNAME (MAX LEN 10)"))
+			err = conn.WriteMessage(1, []byte("NULL OR TOO LONG USERNAME (MAX LEN 10)"))
+			if err != nil {
+				fmt.Println("75 - error")
+			}
 			return
 		}
 
-		if _, ok := clients[initMsg.Username]; ok {
-			conn.WriteMessage(1, []byte("USERNAME IS ALREADY EXIST"))
+		if _, ok := clients_.Load(initMsg.Username); ok {
+			err = conn.WriteMessage(1, []byte("USERNAME IS ALREADY EXIST"))
+			if err != nil {
+				fmt.Println("83 - error")
+			}
 			return
 		}
 
-		clients[initMsg.Username] = conn
-		defer fmt.Println("END CHAT ", initMsg.Username, clients)
-		defer delete(clients, initMsg.Username)
+		clients_.Store(initMsg.Username, conn)
+
+		defer fmt.Println("END CHAT ", initMsg.Username, clients_)
+		defer clients_.Delete(initMsg.Username)
 
 		for {
 			var msg messages.Message_
@@ -85,41 +103,60 @@ func echo(w http.ResponseWriter, r *http.Request) {
 			err = conn.ReadJSON(&msg)
 			if err != nil {
 				fmt.Println(err)
-				conn.WriteMessage(1, []byte("Message_ doenst send"))
+				err = conn.WriteMessage(1, []byte("Message_ doenst send"))
+				if err != nil {
+					fmt.Println("114 - error", err)
+					break
+				}
 				break
 			}
 
 			fmt.Println("SENDER: ", msg.Sender, initMsg.Username)
 			if msg.Sender != initMsg.Username {
-				conn.WriteMessage(1, []byte("SENDER USERNAMES DOESN'T MATCH"))
+				err = conn.WriteMessage(1, []byte("SENDER USERNAMES DOESN'T MATCH"))
+				if err != nil {
+					fmt.Println("123 - error", err)
+					break
+				}
 				continue
 			}
 
-			_, ok := clients[msg.Receiver]
+			_, ok := clients_.Load(msg.Receiver)
 			if msg.Receiver == "" || len(msg.Receiver) > 10 || !ok {
-				conn.WriteMessage(1, []byte("WRONG RECEIVER USERNAME"))
+				err = conn.WriteMessage(1, []byte("WRONG RECEIVER USERNAME"))
+				if err != nil {
+					fmt.Println("133 - error", err)
+					break
+				}
 				continue
 			}
 
 			//fmt.Println(msg.Receiver)
 
 			log.Printf("recv: %s", msg.Message, "R", msg.Receiver)
-			err = clients[msg.Receiver].WriteMessage(1, []byte("From: "+msg.Sender+`: `+msg.Message))
-			if err != nil {
-				log.Println("write:", err)
-				break
+
+			client_, ok := clients_.Load(msg.Receiver)
+			if client__, ok := client_.(*websocket.Conn); ok {
+				err = client__.WriteMessage(1, []byte("From: "+msg.Sender+`: `+msg.Message))
+				if err != nil {
+					fmt.Println("144 - error", err)
+					break
+				}
+			} else {
+				log.Printf("ERROR\nITS NOT A WS.CONN")
+				return
 			}
 		}
 	}
 }
 
-func home(w http.ResponseWriter, r *http.Request) {
+func homeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
 	}
 
-	homeTemplate.Execute(w, "ws://"+r.Host+"/echo")
+	homeTemplate.Execute(w, "ws://"+r.Host+"/WSechoHandler")
 	//fmt.Println("r.Host: ", r.Host)
 	//http.FileServer(http.Dir("./web/main.js"))
 }
@@ -130,7 +167,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roomTemplate.Execute(w, "ws://"+r.Host+"/room/echo")
+	roomTemplate.Execute(w, "ws://"+r.Host+"/room/WSechoHandler")
 	//fmt.Println("ROOM", r.Host)
 }
 
@@ -138,7 +175,7 @@ var rooms = make(map[string]*room.Room)
 var broadcast = make(chan messages.RoomMessage)
 
 func roomEcho(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/room/echo" {
+	if r.URL.Path != "/room/WSechoHandler" {
 		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
 	}
@@ -149,9 +186,17 @@ func roomEcho(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer conn.Close()
+	defer func(conn *websocket.Conn) {
+		err := conn.Close()
+		if err != nil {
+			fmt.Println("204 - error", err)
+		}
+	}(conn)
 
-	conn.WriteMessage(1, []byte("CONNECTION SUCCESFULL"))
+	err = conn.WriteMessage(1, []byte("CONNECTION SUCCESFULL"))
+	if err != nil {
+		fmt.Println("210 - error", err)
+	}
 
 	var initMsg messages.InitRoomMessage
 
@@ -165,12 +210,18 @@ func roomEcho(w http.ResponseWriter, r *http.Request) {
 	} else {
 
 		if initMsg.RoomName == "" {
-			conn.WriteMessage(1, []byte("NULL ROOMNAME"))
+			err = conn.WriteMessage(1, []byte("NULL ROOMNAME"))
+			if err != nil {
+				fmt.Println("227 - error", err)
+			}
 			return
 		}
 
 		if initMsg.Username == "" || len(initMsg.Username) > 10 {
-			conn.WriteMessage(1, []byte("NULL OR TOO LONG USERNAME (MAX LEN 10)"))
+			err = conn.WriteMessage(1, []byte("NULL OR TOO LONG USERNAME (MAX LEN 10)"))
+			if err != nil {
+				fmt.Println("235 - error", err)
+			}
 			return
 		}
 
@@ -179,7 +230,10 @@ func roomEcho(w http.ResponseWriter, r *http.Request) {
 		if ok {
 
 			if rooms[initMsg.RoomName].AddConn(initMsg.Username, conn) {
-				conn.WriteMessage(1, []byte("USERNAME IN ROOM IS ALREADY EXIST"))
+				err = conn.WriteMessage(1, []byte("USERNAME IN ROOM IS ALREADY EXIST"))
+				if err != nil {
+					fmt.Println("246 - error", err)
+				}
 				return
 			}
 		} else {
@@ -212,13 +266,19 @@ func roomEcho(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if msg.Username != initMsg.Username {
-				conn.WriteMessage(1, []byte("SENDER USERNAMES DOESN'T MATCH"))
+				err = conn.WriteMessage(1, []byte("SENDER USERNAMES DOESN'T MATCH"))
+				if err != nil {
+					fmt.Println("283 - error", err)
+				}
 				continue
 			}
 
 			_, ok := rooms[msg.RoomName]
 			if msg.RoomName == "" || !ok {
-				conn.WriteMessage(1, []byte("WRONG ROOMNAME"))
+				err = conn.WriteMessage(1, []byte("WRONG ROOMNAME"))
+				if err != nil {
+					fmt.Println("292 - error", err)
+				}
 				continue
 			}
 
@@ -246,22 +306,22 @@ func handleRoomMessage() {
 	}
 }
 
-func RoomIsNull() {
-	for {
-		for roomName, room := range rooms {
-			if room.GetLen() == 0 {
-				delete(rooms, roomName)
-				fmt.Println("DELETE ROOM")
-			}
-		}
-	}
-}
+//func RoomIsNull() {
+//	for {
+//		for roomName, room := range rooms {
+//			if room.GetLen() == 0 {
+//				delete(rooms, roomName)
+//				fmt.Println("DELETE ROOM")
+//			}
+//		}
+//	}
+//}
 
 func main() {
 	flag.Parse()
 	log.SetFlags(0)
-	http.HandleFunc("/echo", echo)
-	http.HandleFunc("/", home)
+	http.HandleFunc("/echo", WSechoHandler)
+	http.HandleFunc("/", homeHandler)
 	http.HandleFunc("/room/echo", roomEcho)
 	http.HandleFunc("/room", roomHandler)
 
@@ -269,7 +329,7 @@ func main() {
 	//go RoomIsNull()
 
 	log.Fatal(http.ListenAndServe(*addr, nil))
-
+	fmt.Println("RUNNING")
 }
 
 var homeTemplate = template.Must(template.ParseFiles("web/home.html"))
