@@ -15,16 +15,15 @@
 package main
 
 import (
-	game_main "awesomeProject/game-main"
-	game_room "awesomeProject/game-room"
-	"awesomeProject/messages"
 	"flag"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"html/template"
 	"log"
 	"net/http"
-	//"awesomeProject/game-main"
+	"wschat.cvclon3.net/internal/messages"
+	"wschat.cvclon3.net/internal/room"
+	"wschat.cvclon3.net/pkg/web_errors"
 )
 
 var addr = flag.String("addr", "localhost:8080", "http service address")
@@ -35,7 +34,7 @@ var clients = make(map[string]*websocket.Conn)
 
 func echo(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/echo" {
-		game_main.ErrorHandler(w, r, http.StatusNotFound)
+		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
 	}
 
@@ -116,18 +115,18 @@ func echo(w http.ResponseWriter, r *http.Request) {
 
 func home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		game_main.ErrorHandler(w, r, http.StatusNotFound)
+		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
 	}
 
 	homeTemplate.Execute(w, "ws://"+r.Host+"/echo")
 	//fmt.Println("r.Host: ", r.Host)
-	//http.FileServer(http.Dir("./static/main.js"))
+	//http.FileServer(http.Dir("./web/main.js"))
 }
 
-func room(w http.ResponseWriter, r *http.Request) {
+func roomHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/room" {
-		game_main.ErrorHandler(w, r, http.StatusNotFound)
+		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
 	}
 
@@ -135,12 +134,12 @@ func room(w http.ResponseWriter, r *http.Request) {
 	//fmt.Println("ROOM", r.Host)
 }
 
-var rooms = make(map[string]*game_room.Room)
+var rooms = make(map[string]*room.Room)
 var broadcast = make(chan messages.RoomMessage)
 
 func roomEcho(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/room/echo" {
-		game_main.ErrorHandler(w, r, http.StatusNotFound)
+		web_errors.ErrorHandler(w, r, http.StatusNotFound)
 		return
 	}
 
@@ -185,7 +184,7 @@ func roomEcho(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 
-			var r game_room.Room
+			var r room.Room
 			r.Players = make(map[string]*websocket.Conn)
 			r.AddConn(initMsg.Username, conn)
 			rooms[initMsg.RoomName] = &r
@@ -264,7 +263,7 @@ func main() {
 	http.HandleFunc("/echo", echo)
 	http.HandleFunc("/", home)
 	http.HandleFunc("/room/echo", roomEcho)
-	http.HandleFunc("/room", room)
+	http.HandleFunc("/room", roomHandler)
 
 	go handleRoomMessage()
 	//go RoomIsNull()
@@ -273,5 +272,5 @@ func main() {
 
 }
 
-var homeTemplate = template.Must(template.ParseFiles("static/home.html"))
-var roomTemplate = template.Must(template.ParseFiles("static/room.html"))
+var homeTemplate = template.Must(template.ParseFiles("web/home.html"))
+var roomTemplate = template.Must(template.ParseFiles("web/room.html"))

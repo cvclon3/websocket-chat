@@ -1,4 +1,4 @@
-package game_room
+package room
 
 import (
 	"github.com/gorilla/websocket"

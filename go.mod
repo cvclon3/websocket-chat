@@ -1,4 +1,4 @@
-module awesomeProject
+module wschat.cvclon3.net
 
 go 1.21
 

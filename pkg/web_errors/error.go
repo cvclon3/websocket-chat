@@ -1,4 +1,4 @@
-package game_main
+package web_errors
 
 import (
 	"fmt"
